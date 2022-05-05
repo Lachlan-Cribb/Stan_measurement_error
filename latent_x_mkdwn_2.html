@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+
+<meta name="author" content="LC" />
+
+<meta name="date" content="2022-05-02" />
+
+<title>Modeling replicated measurements with Stan</title>
+
+<script src="latent_x_mkdwn_2_files/header-attrs-2.14/header-attrs.js"></script>
+<script src="latent_x_mkdwn_2_files/jquery-3.6.0/jquery-3.6.0.min.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link href="latent_x_mkdwn_2_files/bootstrap-3.3.5/css/bootstrap.min.css" rel="stylesheet" />
+<script src="latent_x_mkdwn_2_files/bootstrap-3.3.5/js/bootstrap.min.js"></script>
+<script src="latent_x_mkdwn_2_files/bootstrap-3.3.5/shim/html5shiv.min.js"></script>
+<script src="latent_x_mkdwn_2_files/bootstrap-3.3.5/shim/respond.min.js"></script>
+<style>h1 {font-size: 34px;}
+       h1.title {font-size: 38px;}
+       h2 {font-size: 30px;}
+       h3 {font-size: 24px;}
+       h4 {font-size: 18px;}
+       h5 {font-size: 16px;}
+       h6 {font-size: 12px;}
+       code {color: inherit; background-color: rgba(0, 0, 0, 0.04);}
+       pre:not([class]) { background-color: white }</style>
+<script src="latent_x_mkdwn_2_files/navigation-1.1/tabsets.js"></script>
+<link href="latent_x_mkdwn_2_files/highlightjs-9.12.0/default.css" rel="stylesheet" />
+<script src="latent_x_mkdwn_2_files/highlightjs-9.12.0/highlight.js"></script>
+
+<style type="text/css">
+  code{white-space: pre-wrap;}
+  span.smallcaps{font-variant: small-caps;}
+  span.underline{text-decoration: underline;}
+  div.column{display: inline-block; vertical-align: top; width: 50%;}
+  div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+  ul.task-list{list-style: none;}
+    </style>
+
+<style type="text/css">code{white-space: pre;}</style>
+<script type="text/javascript">
+if (window.hljs) {
+  hljs.configure({languages: []});
+  hljs.initHighlightingOnLoad();
+  if (document.readyState && document.readyState === "complete") {
+    window.setTimeout(function() { hljs.initHighlighting(); }, 0);
+  }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<style type = "text/css">
+.main-container {
+  max-width: 940px;
+  margin-left: auto;
+  margin-right: auto;
+}
+img {
+  max-width:100%;
+}
+.tabbed-pane {
+  padding-top: 12px;
+}
+.html-widget {
+  margin-bottom: 20px;
+}
+button.code-folding-btn:focus {
+  outline: none;
+}
+summary {
+  display: list-item;
+}
+details > summary > p:only-child {
+  display: inline;
+}
+pre code {
+  padding: 0;
+}
+</style>
+
+
+
+<!-- tabsets -->
+
+<style type="text/css">
+.tabset-dropdown > .nav-tabs {
+  display: inline-table;
+  max-height: 500px;
+  min-height: 44px;
+  overflow-y: auto;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.tabset-dropdown > .nav-tabs > li.active:before {
+  content: "";
+  font-family: 'Glyphicons Halflings';
+  display: inline-block;
+  padding: 10px;
+  border-right: 1px solid #ddd;
+}
+
+.tabset-dropdown > .nav-tabs.nav-tabs-open > li.active:before {
+  content: "&#xe258;";
+  border: none;
+}
+
+.tabset-dropdown > .nav-tabs.nav-tabs-open:before {
+  content: "";
+  font-family: 'Glyphicons Halflings';
+  display: inline-block;
+  padding: 10px;
+  border-right: 1px solid #ddd;
+}
+
+.tabset-dropdown > .nav-tabs > li.active {
+  display: block;
+}
+
+.tabset-dropdown > .nav-tabs > li > a,
+.tabset-dropdown > .nav-tabs > li > a:focus,
+.tabset-dropdown > .nav-tabs > li > a:hover {
+  border: none;
+  display: inline-block;
+  border-radius: 4px;
+  background-color: transparent;
+}
+
+.tabset-dropdown > .nav-tabs.nav-tabs-open > li {
+  display: block;
+  float: none;
+}
+
+.tabset-dropdown > .nav-tabs > li {
+  display: none;
+}
+</style>
+
+<!-- code folding -->
+
+
+
+
+</head>
+
+<body>
+
+
+<div class="container-fluid main-container">
+
+
+
+
+<div id="header">
+
+
+
+<h1 class="title toc-ignore">Modeling replicated measurements with
+Stan</h1>
+<h4 class="author">LC</h4>
+<h4 class="date">2022-05-02</h4>
+
+</div>
+
+
+<p>Load packages:</p>
+<pre class="r"><code>library(tidyverse)
+library(cmdstanr)
+library(posterior)</code></pre>
+<p>Noisy data are simulated. True_x is the latent true predictor
+variable. x1 and x2 are noisy measurements of true_x. The outcome y is
+normally distributed. The regression coefficient of y on true_x is 0.5.
+The aim here is to see how well different methods are able to recover
+that true coefficient.</p>
+<pre class="r"><code># simulate noisy x data
+
+set.seed(100)
+
+d &lt;- tibble(
+  true_x = rnorm(1000),
+  y = 0.5*true_x + rnorm(1000),
+  # observed x values
+  x1 = true_x + rnorm(1000, sd = 1),
+  x2 = true_x + rnorm(1000, sd = 1))</code></pre>
+<p>Add data to list for Stan:</p>
+<pre class="r"><code>stan_data &lt;- list(
+  N = nrow(d),
+  Nmeasurements = ncol(d[,c(&quot;x1&quot;,&quot;x2&quot;)]),
+  y = d$y,
+  x = d[,c(&quot;x1&quot;,&quot;x2&quot;)]
+)</code></pre>
+<div id="model-1---flat-priors" class="section level3">
+<h3>Model 1 - flat priors</h3>
+<p>Now the Stan model is specified. The model, in statistical notation,
+is: <span class="math display">\[ x_{obs,nj} \sim N(x_{true,n} ,
+\sigma_x) \]</span> <span class="math display">\[ y_n \sim N(\alpha +
+\beta * x_{true,n}, \sigma_y) \]</span> For this first model, flat
+priors are used for all parameters.</p>
+<pre class="stan"><code>
+data {
+  int N;                        // umber of individuals
+  int Nmeasurements;            // number of replicates
+  vector[N] y;                  // outcome
+  matrix[N, Nmeasurements] x;   // N by Nmeasurements matrix x 
+}
+
+parameters {
+  real&lt;lower=0&gt; sigma_x;    // sigma of latent true x
+  vector[N] true_x;         // latent true x
+
+  real&lt;lower=0&gt; sigma_y;    // sigma of y
+  real alpha;               // intercept
+  real beta;                // coefficient beta
+
+}
+
+model {
+
+  for (n in 1:N) {
+    x[n] ~ normal(true_x[n], sigma_x);        // model for true x
+  }
+
+  y ~ normal(alpha + beta * true_x, sigma_y); // model for y
+}
+</code></pre>
+<p>Now estimate the model using cmdstanr.</p>
+<pre class="r"><code>samp &lt;- latent_x_mod1$sample(
+  data = stan_data,
+  refresh = 0,
+  iter_warmup = 1500,
+  iter_sampling = 3000,
+  parallel_chains = 4
+)</code></pre>
+<pre><code>## Running MCMC with 4 parallel chains...
+## 
+## Chain 2 finished in 24.0 seconds.
+## Chain 1 finished in 24.5 seconds.
+## Chain 3 finished in 24.6 seconds.
+## Chain 4 finished in 24.7 seconds.
+## 
+## All 4 chains finished successfully.
+## Mean chain execution time: 24.5 seconds.
+## Total execution time: 24.8 seconds.</code></pre>
+<p>Here are the estimates from the model.</p>
+<pre class="r"><code>summarise_draws(samp$draws(c(&quot;alpha&quot;, &quot;beta&quot;, &quot;sigma_x&quot;)))</code></pre>
+<pre><code>## # A tibble: 3 × 10
+##   variable    mean  median     sd    mad      q5    q95  rhat ess_bulk ess_tail
+##   &lt;chr&gt;      &lt;dbl&gt;   &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;   &lt;dbl&gt;  &lt;dbl&gt; &lt;dbl&gt;    &lt;dbl&gt;    &lt;dbl&gt;
+## 1 alpha    0.00966 0.00961 0.0334 0.0332 -0.0454 0.0644  1.00   15326.    8475.
+## 2 beta     0.294   0.294   0.0270 0.0268  0.249  0.338   1.00    9538.    8874.
+## 3 sigma_x  1.01    1.01    0.0227 0.0227  0.974  1.05    1.00    5049.    6419.</code></pre>
+<p>Compare with regression using the true x variable and one using a
+simple average of the replicated measurements:</p>
+<pre class="r"><code>broom::tidy(lm(y ~ true_x, data = d))</code></pre>
+<pre><code>## # A tibble: 2 × 5
+##   term        estimate std.error statistic  p.value
+##   &lt;chr&gt;          &lt;dbl&gt;     &lt;dbl&gt;     &lt;dbl&gt;    &lt;dbl&gt;
+## 1 (Intercept)  0.00392    0.0310     0.126 8.99e- 1
+## 2 true_x       0.513      0.0301    17.0   2.39e-57</code></pre>
+<pre class="r"><code>d$raw_mean &lt;- rowMeans(d[,3:4])
+
+broom::tidy(lm(y ~ raw_mean, data = d))</code></pre>
+<pre><code>## # A tibble: 2 × 5
+##   term        estimate std.error statistic  p.value
+##   &lt;chr&gt;          &lt;dbl&gt;     &lt;dbl&gt;     &lt;dbl&gt;    &lt;dbl&gt;
+## 1 (Intercept)  0.00929    0.0334     0.278 7.81e- 1
+## 2 raw_mean     0.293      0.0273    10.7   1.80e-25</code></pre>
+</div>
+<div id="model-2---realistic-priors" class="section level3">
+<h3>Model 2 - realistic priors</h3>
+<p>In this model, a hierarchical prior is used for true_x. This way,
+estimates of latent true_x are pulled towards the overall estimated
+true_x distribution. The model again is: <span class="math display">\[
+x_{obs,nj} \sim N(x_{true,n} , \sigma_x) \]</span> <span
+class="math display">\[ y_n \sim N(\alpha + \beta * x_{true,n},
+\sigma_y) \]</span> Weakly informative priors are used for all
+coefficients. A hierarchical prior is used for the true latent x: <span
+class="math display">\[ x_{true,n} \sim N(\mu_{xtrue}, \sigma_{xtrue})
+\]</span> <span class="math display">\[ \mu_{xtrue} \sim N(0,1)
+\]</span> <span class="math display">\[ \sigma_{xtrue} \sim
+exponential(1) \]</span></p>
+<p><span class="math display">\[ \alpha \sim N(0,1) \]</span> <span
+class="math display">\[ \beta \sim N(0,1) \]</span> <span
+class="math display">\[ \sigma_x \sim ~ exponential(1) \]</span> <span
+class="math display">\[ \sigma_y \sim ~ exponential(1) \]</span></p>
+<pre class="stan"><code>
+data {
+  int N;                        // umber of individuals
+  int Nmeasurements;            // number of replicates
+  vector[N] y;                  // outcome
+  matrix[N, Nmeasurements] x;   // N by Nmeasurements matrix x 
+}
+
+parameters {
+  real&lt;lower=0&gt; sigma_x;    // sigma of latent true x
+  vector[N] true_x;         // latent true x
+  real mu_truex;            // location of prior on true x
+  real&lt;lower=0&gt; sd_truex;   // scale of prior on true x
+
+  real&lt;lower=0&gt; sigma_y;    // sigma of y
+  real alpha;               // intercept
+  real beta;                // coefficient beta
+
+}
+
+model {
+  true_x ~ normal(mu_truex, sd_truex);   // prior on true x
+  mu_truex ~ normal(0,1);                // hyperprior
+  sd_truex ~ exponential(1);             // hyperprior
+  sigma_x ~ exponential(1);              // prior on sigma_x
+  
+  alpha ~ normal(0,1);           // intercept prior
+  beta ~ normal(0,1);            // beta prior
+  sigma_y ~ exponential(1);      // prior on sigma_y
+
+  for (n in 1:N) {
+    x[n] ~ normal(true_x[n], sigma_x);        // model for true x
+  }
+
+  y ~ normal(alpha + beta * true_x, sigma_y); // model for y
+}
+</code></pre>
+<p>Now estimate the model using cmdstanr.</p>
+<pre class="r"><code>samp2 &lt;- latent_x_mod2$sample(
+  data = stan_data,
+  refresh = 0,
+  iter_warmup = 1500,
+  iter_sampling = 3000,
+  parallel_chains = 4
+)</code></pre>
+<pre><code>## Running MCMC with 4 parallel chains...
+## 
+## Chain 3 finished in 22.1 seconds.
+## Chain 2 finished in 22.2 seconds.
+## Chain 4 finished in 22.3 seconds.
+## Chain 1 finished in 22.6 seconds.
+## 
+## All 4 chains finished successfully.
+## Mean chain execution time: 22.3 seconds.
+## Total execution time: 22.7 seconds.</code></pre>
+<p>Here are the estimates from this model using reasonable priors.</p>
+<pre class="r"><code>summarise_draws(samp2$draws(c(&quot;alpha&quot;, &quot;beta&quot;, &quot;sigma_x&quot;, &quot;mu_truex&quot;, &quot;sd_truex&quot;)))</code></pre>
+<pre><code>## # A tibble: 5 × 10
+##   variable    mean  median     sd    mad      q5    q95  rhat ess_bulk ess_tail
+##   &lt;chr&gt;      &lt;dbl&gt;   &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;   &lt;dbl&gt;  &lt;dbl&gt; &lt;dbl&gt;    &lt;dbl&gt;    &lt;dbl&gt;
+## 1 alpha    0.00808 0.00808 0.0337 0.0330 -0.0471 0.0636  1.00   13926.    9080.
+## 2 beta     0.446   0.446   0.0439 0.0436  0.374  0.519   1.00    5960.    7667.
+## 3 sigma_x  1.01    1.01    0.0227 0.0228  0.976  1.05    1.00    5655.    7970.
+## 4 mu_truex 0.0109  0.0108  0.0387 0.0386 -0.0529 0.0744  1.00    8707.    8841.
+## 5 sd_truex 0.992   0.992   0.0355 0.0357  0.933  1.05    1.00    4436.    6213.</code></pre>
+<p>Compare with regression using the true x variable and one using a
+simple average of the replicated measurements:</p>
+<pre class="r"><code>broom::tidy(lm(y ~ true_x, data = d))</code></pre>
+<pre><code>## # A tibble: 2 × 5
+##   term        estimate std.error statistic  p.value
+##   &lt;chr&gt;          &lt;dbl&gt;     &lt;dbl&gt;     &lt;dbl&gt;    &lt;dbl&gt;
+## 1 (Intercept)  0.00392    0.0310     0.126 8.99e- 1
+## 2 true_x       0.513      0.0301    17.0   2.39e-57</code></pre>
+<pre class="r"><code>d$raw_mean &lt;- rowMeans(d[,3:4])
+
+broom::tidy(lm(y ~ raw_mean, data = d))</code></pre>
+<pre><code>## # A tibble: 2 × 5
+##   term        estimate std.error statistic  p.value
+##   &lt;chr&gt;          &lt;dbl&gt;     &lt;dbl&gt;     &lt;dbl&gt;    &lt;dbl&gt;
+## 1 (Intercept)  0.00929    0.0334     0.278 7.81e- 1
+## 2 raw_mean     0.293      0.0273    10.7   1.80e-25</code></pre>
+</div>
+
+
+
+
+</div>
+
+<script>
+
+// add bootstrap table styles to pandoc tables
+function bootstrapStylePandocTables() {
+  $('tr.odd').parent('tbody').parent('table').addClass('table table-condensed');
+}
+$(document).ready(function () {
+  bootstrapStylePandocTables();
+});
+
+
+</script>
+
+<!-- tabsets -->
+
+<script>
+$(document).ready(function () {
+  window.buildTabsets("TOC");
+});
+
+$(document).ready(function () {
+  $('.tabset-dropdown > .nav-tabs > li').click(function () {
+    $(this).parent().toggleClass('nav-tabs-open');
+  });
+});
+</script>
+
+<!-- code folding -->
+
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>

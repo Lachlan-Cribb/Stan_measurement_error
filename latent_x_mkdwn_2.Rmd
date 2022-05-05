@@ -1,0 +1,223 @@
+---
+title: "Modeling replicated measurements with Stan"
+author: "LC"
+date: '2022-05-02'
+output:
+  html_document:
+    self_contained: no
+---
+
+Load packages:
+
+```{r setup, warning = F, message = F}
+library(tidyverse)
+library(cmdstanr)
+library(posterior)
+```
+
+```{r setup2, include = F, echo = F}
+
+register_knitr_engine()
+
+```
+
+Noisy data are simulated. True_x is the latent true predictor variable. x1 and x2 are noisy measurements of true_x. The outcome y is normally distributed. The regression coefficient of y on true_x is 0.5. The aim here is to see how well different methods are able to recover that true coefficient.
+
+```{r simulate_data}
+
+# simulate noisy x data
+
+set.seed(100)
+
+d <- tibble(
+  true_x = rnorm(1000),
+  y = 0.5*true_x + rnorm(1000),
+  # observed x values
+  x1 = true_x + rnorm(1000, sd = 1),
+  x2 = true_x + rnorm(1000, sd = 1))
+
+```
+
+Add data to list for Stan: 
+
+```{r}
+
+stan_data <- list(
+  N = nrow(d),
+  Nmeasurements = ncol(d[,c("x1","x2")]),
+  y = d$y,
+  x = d[,c("x1","x2")]
+)
+
+
+```
+
+### Model 1 - flat priors ###
+
+Now the Stan model is specified. The model, in statistical notation, is: 
+$$ x_{obs,nj} \sim N(x_{true,n} , \sigma_x) $$
+$$ y_n \sim N(\alpha + \beta * x_{true,n}, \sigma_y) $$
+For this first model, flat priors are used for all parameters.
+
+
+```{stan specify_model1, output.var = "latent_x_mod1"}
+
+data {
+  int N;                        // umber of individuals
+  int Nmeasurements;            // number of replicates
+  vector[N] y;                  // outcome
+  matrix[N, Nmeasurements] x;   // N by Nmeasurements matrix x 
+}
+
+parameters {
+  real<lower=0> sigma_x;    // sigma of latent true x
+  vector[N] true_x;         // latent true x
+
+  real<lower=0> sigma_y;    // sigma of y
+  real alpha;               // intercept
+  real beta;                // coefficient beta
+
+}
+
+model {
+
+  for (n in 1:N) {
+    x[n] ~ normal(true_x[n], sigma_x);        // model for true x
+  }
+
+  y ~ normal(alpha + beta * true_x, sigma_y); // model for y
+}
+
+```
+
+Now estimate the model using cmdstanr.
+
+```{r estimate_model1, message = F, warning = F, cache=T}
+
+samp <- latent_x_mod1$sample(
+  data = stan_data,
+  refresh = 0,
+  iter_warmup = 1500,
+  iter_sampling = 3000,
+  parallel_chains = 4
+)
+```
+
+Here are the estimates from the model. 
+
+
+```{r estimates1}
+
+summarise_draws(samp$draws(c("alpha", "beta", "sigma_x")))
+
+
+```
+
+Compare with regression using the true x variable and one using a simple average of the replicated measurements: 
+
+```{r compare}
+
+broom::tidy(lm(y ~ true_x, data = d))
+
+d$raw_mean <- rowMeans(d[,3:4])
+
+broom::tidy(lm(y ~ raw_mean, data = d))
+
+```
+
+
+### Model 2 - realistic priors ###
+
+In this model, a hierarchical prior is used for true_x. This way, estimates of latent true_x are pulled towards the overall estimated true_x distribution. The model again is:
+$$ x_{obs,nj} \sim N(x_{true,n} , \sigma_x) $$
+$$ y_n \sim N(\alpha + \beta * x_{true,n}, \sigma_y) $$
+Weakly informative priors are used for all coefficients. A hierarchical prior is used for the true latent x:
+$$ x_{true,n} \sim N(\mu_{xtrue}, \sigma_{xtrue}) $$
+$$ \mu_{xtrue} \sim N(0,1) $$
+$$ \sigma_{xtrue} \sim exponential(1) $$ 
+
+$$ \alpha \sim N(0,1) $$
+$$ \beta \sim N(0,1) $$
+$$ \sigma_x \sim ~ exponential(1) $$
+$$ \sigma_y \sim ~ exponential(1) $$
+
+
+
+```{stan specify_model2, output.var = "latent_x_mod2"}
+
+data {
+  int N;                        // umber of individuals
+  int Nmeasurements;            // number of replicates
+  vector[N] y;                  // outcome
+  matrix[N, Nmeasurements] x;   // N by Nmeasurements matrix x 
+}
+
+parameters {
+  real<lower=0> sigma_x;    // sigma of latent true x
+  vector[N] true_x;         // latent true x
+  real mu_truex;            // location of prior on true x
+  real<lower=0> sd_truex;   // scale of prior on true x
+
+  real<lower=0> sigma_y;    // sigma of y
+  real alpha;               // intercept
+  real beta;                // coefficient beta
+
+}
+
+model {
+  true_x ~ normal(mu_truex, sd_truex);   // prior on true x
+  mu_truex ~ normal(0,1);                // hyperprior
+  sd_truex ~ exponential(1);             // hyperprior
+  sigma_x ~ exponential(1);              // prior on sigma_x
+  
+  alpha ~ normal(0,1);           // intercept prior
+  beta ~ normal(0,1);            // beta prior
+  sigma_y ~ exponential(1);      // prior on sigma_y
+
+  for (n in 1:N) {
+    x[n] ~ normal(true_x[n], sigma_x);        // model for true x
+  }
+
+  y ~ normal(alpha + beta * true_x, sigma_y); // model for y
+}
+
+```
+
+Now estimate the model using cmdstanr.
+
+```{r estimate_model2, message = F, warning = F, cache=T}
+
+samp2 <- latent_x_mod2$sample(
+  data = stan_data,
+  refresh = 0,
+  iter_warmup = 1500,
+  iter_sampling = 3000,
+  parallel_chains = 4
+)
+```
+
+Here are the estimates from this model using reasonable priors.
+
+
+```{r estimates2}
+
+summarise_draws(samp2$draws(c("alpha", "beta", "sigma_x", "mu_truex", "sd_truex")))
+
+
+```
+
+Compare with regression using the true x variable and one using a simple average of the replicated measurements: 
+
+```{r compare2}
+
+broom::tidy(lm(y ~ true_x, data = d))
+
+d$raw_mean <- rowMeans(d[,3:4])
+
+broom::tidy(lm(y ~ raw_mean, data = d))
+
+```
+
+
+
+
